@@ -28,7 +28,11 @@ start_link() ->
 
 %% Child :: {Id,StartFunc,Restart,Shutdown,Type,Modules}
 init([]) ->
-    {ok, { {one_for_all, 0, 1}, []} }.
+    AuthSrvHello = {serverinfo_announce, {serverinfo_announce, start_link, []}, permanent, 2000, worker, [serverinfo_announce]},
+    Children = [AuthSrvHello],
+    RestartStrategy = {one_for_one, 10, 10},
+    {ok, {RestartStrategy, Children}}.
+
 
 %%====================================================================
 %% Internal functions
