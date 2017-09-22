@@ -17,14 +17,13 @@
 
 -export([ ping/2 ]).
 
--define(PING_INTERVAL, 1000).
--define(SOCKET_TIMEOUT, 5000).
-
 -record(state, {
         ref                                     :: ranch:ref(),
         socket                                  :: gen_tcp:socket(), 
         transport                               :: module(),
-	hello_tref				:: any()
+	hello_tref				:: any(),
+	ping_interval				:: integer(),
+	ping_timeout				:: integer()
        }).
 
 -type state() :: #state{}.
@@ -40,16 +39,19 @@ init([Ref, Socket, Transport, _Opts = []]) ->
     ok = ranch:accept_ack(Ref),
     ok = Transport:setopts(Socket, [{active, once}, {packet, 4}]),
 
-    {ok, TRef} = timer:apply_interval(?PING_INTERVAL, ?MODULE, ping, [Socket, Transport]),
-    State = #state{ref=Ref, socket=Socket, transport=Transport, hello_tref=TRef},
-    gen_server:enter_loop(?MODULE, [], State, ?SOCKET_TIMEOUT).
+    PingInterval = config:key(<<"authservice.listener.ping_interval">>),
+    PingTimeout = config:key(<<"authservice.listener.ping_timeout">>),
+    {ok, TRef} = timer:apply_interval(PingInterval, ?MODULE, ping, [Socket, Transport]),
+    State = #state{ref=Ref, socket=Socket, transport=Transport, hello_tref=TRef,
+		   ping_interval=PingInterval, ping_timeout=PingTimeout},
+    gen_server:enter_loop(?MODULE, [], State, PingTimeout).
 
 -spec handle_info(Request :: term(), State :: state()) -> {noreply, State :: state()}.
 handle_info({tcp, Socket, <<1:32>>}, State) ->
-    #state{socket=Socket, transport=Transport} = State,
+    #state{socket=Socket, transport=Transport, ping_timeout=Timeout} = State,
     Transport:setopts(Socket, [{active, once}]),
     lager:debug("Pong!", []),
-    {noreply, State, ?SOCKET_TIMEOUT};
+    {noreply, State, Timeout};
 
 handle_info({tcp_closed, _Socket}, State) ->
     {stop, normal, State};

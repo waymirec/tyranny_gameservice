@@ -16,14 +16,13 @@
 
 start(_StartType, _StartArgs) ->
     lager:start(),
-    config:start_link(),
-
+    application:start(os_mon),
     application:start(ranch),
     {ok, _} = ranch:start_listener(tyranny_gameservice,
 				   ranch_tcp,
-				   [ {port, 12346}, 
-				     {num_acceptors, config:num_acceptors()}, 
-				     {max_connections, config:max_connections()}
+				   [ {port, config:key(<<"listener.port">>)}, 
+				     {num_acceptors, config:key(<<"listener.num_acceptors">>)}, 
+				     {max_connections, config:key(<<"listener.max_connections">>)}
  				   ],
 				   authservice_handler,
 				   []),

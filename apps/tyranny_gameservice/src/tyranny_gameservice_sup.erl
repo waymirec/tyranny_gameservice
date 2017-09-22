@@ -28,8 +28,8 @@ start_link() ->
 
 %% Child :: {Id,StartFunc,Restart,Shutdown,Type,Modules}
 init([]) ->
-    AuthSrvHello = {serverinfo_announce, {serverinfo_announce, start_link, []}, permanent, 2000, worker, [serverinfo_announce]},
-    Children = [AuthSrvHello],
+    GameServicePublisher= {gameservice_publisher, {gameservice_publisher, start_link, []}, permanent, 2000, worker, [gameservice_publisher]},
+    Children = [GameServicePublisher],
     RestartStrategy = {one_for_one, 10, 10},
     {ok, {RestartStrategy, Children}}.
 
