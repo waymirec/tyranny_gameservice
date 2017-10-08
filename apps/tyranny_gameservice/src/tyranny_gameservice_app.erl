@@ -20,12 +20,14 @@ start(_StartType, _StartArgs) ->
     application:start(ranch),
     {ok, _} = ranch:start_listener(tyranny_gameservice,
 				   ranch_tcp,
-				   [ {port, config:key(<<"listener.port">>)}, 
-				     {num_acceptors, config:key(<<"listener.num_acceptors">>)}, 
-				     {max_connections, config:key(<<"listener.max_connections">>)}
+				   [{port, config:key(<<"listener.port">>)}, 
+				    {num_acceptors, config:key(<<"listener.num_acceptors">>)}, 
+				    {max_connections, config:key(<<"listener.max_connections">>)}
  				   ],
-				   authservice_handler,
-				   []),
+				   gameservice_handler,
+				   [{socket_timeout, config:key(<<"listener.socket_timeout">>)},
+				    {ping_interval, config:key(<<"ping_interval">>)}
+				   ]),
 
     tyranny_gameservice_sup:start_link().
 

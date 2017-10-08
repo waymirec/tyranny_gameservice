@@ -29,7 +29,8 @@ start_link() ->
 %% Child :: {Id,StartFunc,Restart,Shutdown,Type,Modules}
 init([]) ->
     GameServicePublisher= {gameservice_publisher, {gameservice_publisher, start_link, []}, permanent, 2000, worker, [gameservice_publisher]},
-    Children = [GameServicePublisher],
+    AuthTokenManager = {authtoken_manager, {authtoken_manager, start_link, []}, permanent, 2000, worker, [authtoken_manager]},
+    Children = [GameServicePublisher, AuthTokenManager],
     RestartStrategy = {one_for_one, 10, 10},
     {ok, {RestartStrategy, Children}}.
 

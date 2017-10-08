@@ -14,9 +14,9 @@
 -record(state, { 
         server_name,
         db, 
-        timer }).
-
--define(KEY_PREFIX, "gameservice:info:").
+        timer,
+	ttl
+       }).
 
 start_link() ->
     gen_server:start_link({local, ?MODULE}, ?MODULE, [], []).
@@ -29,10 +29,11 @@ init([]) ->
     ConnectTimeout = config:key(<<"gameserver_db.connect_timeout">>),
     ReconnectDelay = config:key(<<"gameserver_db.reconnect_delay">>),
     UpdateInterval = config:key(<<"gameserver_db.update_interval">>),
+    TTL = config:key(<<"gameserver_db.ttl">>),
     {ok, DbClient} = eredis:start_link(DbHost, DbPort, DbDatabase, DbPassword, ReconnectDelay, ConnectTimeout),
     {ok, TRef} = timer:send_interval(UpdateInterval, self(), update_info),
     ServerName = net_adm:localhost(),
-    State = #state{server_name=ServerName, db=DbClient, timer=TRef},
+    State = #state{server_name=ServerName, db=DbClient, timer=TRef, ttl=TTL},
     {ok, State}.
 
 handle_info(update_info, State) ->
@@ -54,11 +55,10 @@ code_change(_OldVsn, State, _Extra) -> {ok, State}.
 
 %% Internal functions
 update_info(State) ->
-    #state{server_name=ServerName, db=DbClient} = State,
+    #state{server_name=ServerName, db=DbClient, ttl=TTL} = State,
     Info = build_info(),
-    Key = ?KEY_PREFIX ++ ServerName,
-    {ok, <<"OK">>} = eredis:q(DbClient, ["SET", Key, Info]),
-    {ok, _} = eredis:q(DbClient, ["EXPIRE", Key, 15]),
+    {ok, <<"OK">>} = eredis:q(DbClient, ["SET", ServerName, Info]),
+    {ok, _} = eredis:q(DbClient, ["EXPIRE", ServerName, TTL]),
     ok.
 
 build_info() ->
