@@ -24,7 +24,7 @@
   transport             :: module(),
   socket_timeout = 5000 :: integer(),
   ping_timer            :: any(),
-  ping_interval = 3000  :: integer()
+  ping_interval = 1000  :: integer()
 }).
 
 -type state() :: #state{}.
@@ -47,7 +47,7 @@ init([Ref, Socket, Transport, Opts]) ->
   ok = Transport:setopts(Socket, [{active, false}, {packet, 4}]),
 
   {ok, Data} = Transport:recv(Socket, 0, 5000),
-  <<UserNameLength:16, UserName:UserNameLength/binary, TokenLength:16, Token:TokenLength/binary>> = Data,
+  <<?OP_IDENT:16, UserNameLength:16, UserName:UserNameLength/binary, TokenLength:16, Token:TokenLength/binary>> = Data,
   State = #state{ref = Ref, client_id = ClientId, socket = Socket, transport = Transport},
   lager:debug("[~s] Validating token [~s] for user ~s", [ClientId, Token, UserName]),
   case authtoken_manager:validate(UserName, Token) of
@@ -78,7 +78,7 @@ handle_info({tcp, Socket, <<?HDR_PING, Count:32>>}, State) ->
 handle_info({tcp, Socket, <<?HDR_PONG, Count:32>>}, State) ->
   #state{client_id = ClientId, socket = Socket, transport = Transport} = State,
   Transport:setopts(Socket, [{active, once}]),
-  lager:debug("[~s] Recerived pong(~p)!", [ClientId, Count]),
+  lager:debug("[~s] Received pong(~p)!", [ClientId, Count]),
   {noreply, State};
 
 handle_info({tcp_closed, _Socket}, #state{client_id = ClientId} = State) ->
