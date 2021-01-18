@@ -1,8 +1,31 @@
 -define(OPCODE_LEN, 16).
 
--define(OP_IDENT, 20).
--define(OP_PING, 21).
--define(OP_PONG, 22).
+-define(OP_NOOP, 0).
+-define(HDR_NOOP, ?OP_NOOP:?OPCODE_LEN).
 
+-define(OP_IDENT, 10).
+-define(HDR_IDENT, ?OP_IDENT:?OPCODE_LEN).
+
+-define(OP_READY, 11).
+-define(HDR_READY, ?OP_READY:?OPCODE_LEN).
+
+-define(OP_PING, 21).
 -define(HDR_PING, ?OP_PING:?OPCODE_LEN).
+
+-define(OP_PONG, 22).
 -define(HDR_PONG, ?OP_PONG:?OPCODE_LEN).
+
+-define(OP_HELLO, 50).
+-define(HDR_HELLO, ?OP_HELLO:?OPCODE_LEN).
+
+-define(OP_ENTER_WORLD, 100).
+-define(HDR_ENTER_WORLD, ?OP_ENTER_WORLD:?OPCODE_LEN).
+
+-define(OP_SPAWN_GO, 101).
+-define(HDR_SPAWN_GO, ?OP_SPAWN_GO:?OPCODE_LEN).
+
+-define(OP_DESTROY_GO, 102).
+-define(HDR_DESTROY_GO, ?OP_DESTROY_GO:?OPCODE_LEN).
+
+-define(OP_MOVE, 103).
+-define(HDR_MOVE, ?OP_MOVE:?OPCODE_LEN).

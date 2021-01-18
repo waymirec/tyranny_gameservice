@@ -20,6 +20,7 @@
 -record(state, {
   ref                   :: ranch:ref(),
   client_id             :: binary(),
+  client_uuid           :: binary(),
   socket                :: gen_tcp:socket(),
   transport             :: module(),
   socket_timeout = 5000 :: integer(),
@@ -31,15 +32,16 @@
 
 -define(config(Key, Opts), proplists:get_value(Key, Opts)).
 
--spec start_link(Ref :: ranch:ref(), Socket :: gen_udp:socket(), Transport :: module(), any()) -> {ok, pid()}.
+-spec start_link(Ref :: ranch:ref(), Socket :: gen_tcp:socket(), Transport :: module(), any()) -> {ok, pid()}.
 start_link(Ref, Socket, Transport, Opts) ->
-  %% start the process syncronously to avoid deadlock
+  %% start the process synchronously to avoid deadlock
   {ok, proc_lib:spawn_link(?MODULE, init, [[Ref, Socket, Transport, Opts]])}.
 
 -spec init(Args :: list()) -> no_return().
 init([Ref, Socket, Transport, Opts]) ->
   {ok, {IpAddress, Port}} = inet:peername(Socket),
   ClientId = list_to_binary(io_lib:format("~s:~p", [inet:ntoa(IpAddress), Port])),
+  ClientUuid = uuid:create(),
   lager:info("[~s] Connection accepted from client ~s:~p", [ClientId, inet:ntoa(IpAddress), Port]),
 
   %% Perform any required state initialization here
@@ -48,19 +50,44 @@ init([Ref, Socket, Transport, Opts]) ->
 
   {ok, Data} = Transport:recv(Socket, 0, 5000),
   <<?OP_IDENT:16, UserNameLength:16, UserName:UserNameLength/binary, TokenLength:16, Token:TokenLength/binary>> = Data,
-  State = #state{ref = Ref, client_id = ClientId, socket = Socket, transport = Transport},
+  State = #state
+  {
+    ref = Ref,
+    client_id = ClientId,
+    client_uuid = ClientUuid,
+    socket = Socket,
+    transport = Transport
+  },
+
   lager:debug("[~s] Validating token [~s] for user ~s", [ClientId, Token, UserName]),
   case authtoken_manager:validate(UserName, Token) of
     true ->
       lager:debug("[~s] Token is valid", [ClientId]),
-      SocketTimeout = ?config(socket_timeout, Opts),
+
+      ok = Transport:send(Socket,<<?HDR_HELLO, ClientUuid/binary>>),
+
+      {ok, <<?HDR_READY>>} = Transport:recv(Socket, 0, 5000),
+
+      X = 0.0,
+      Y = 8.0,
+      Z = 0.0,
+      lager:debug("[~s] Client is ready. Sending Enter World.", [ClientId]),
+      ok = gen_tcp:send(Socket, <<?HDR_ENTER_WORLD, X:32/float, Y:32/float, Z:32/float>>),
+
+      ok = Transport:setopts(Socket, [{active, once}]),
       PingInterval = ?config(ping_interval, Opts),
       PingTimer = erlang:send_after(PingInterval, self(), {ping, 1}),
-      State1 = State#state{socket_timeout = SocketTimeout,
+      SocketTimeout = ?config(socket_timeout, Opts),
+
+      State1 = State#state
+      {
+        socket_timeout = SocketTimeout,
         ping_interval = PingInterval,
-        ping_timer = PingTimer},
-      ok = Transport:setopts(Socket, [{active, once}]),
+        ping_timer = PingTimer
+      },
+
       gen_server:enter_loop(?MODULE, [], State1, SocketTimeout);
+
     false ->
       lager:debug("[~s] Token is not valid: ~p", [ClientId, Token]),
       Transport:close(Socket),
@@ -68,9 +95,14 @@ init([Ref, Socket, Transport, Opts]) ->
   end.
 
 -spec handle_info(Request :: term(), State :: state()) -> {noreply, State :: state()}.
+handle_info({tcp, Socket, <<?HDR_NOOP, _Ignored:8>>}, State) ->
+  #state{transport = Transport, socket = Socket, socket_timeout = SocketTimeout} = State,
+  ok = Transport:setopts(Socket, [{active, once}]),
+  {noreply, State, SocketTimeout};
+
 handle_info({tcp, Socket, <<?HDR_PING, Count:32>>}, State) ->
   #state{client_id = ClientId, transport = Transport, socket = Socket, socket_timeout = SocketTimeout} = State,
-  lager:debug("[~s] Received ping(~p)!", [ClientId, Count]),
+  % lager:debug("[~s] Received ping(~p)!", [ClientId, Count]),
   ok = gen_tcp:send(Socket, <<?HDR_PONG, Count:32>>),
   ok = Transport:setopts(Socket, [{active, once}]),
   {noreply, State, SocketTimeout};
@@ -78,7 +110,13 @@ handle_info({tcp, Socket, <<?HDR_PING, Count:32>>}, State) ->
 handle_info({tcp, Socket, <<?HDR_PONG, Count:32>>}, State) ->
   #state{client_id = ClientId, socket = Socket, transport = Transport} = State,
   Transport:setopts(Socket, [{active, once}]),
-  lager:debug("[~s] Received pong(~p)!", [ClientId, Count]),
+  % lager:debug("[~s] Received pong(~p)!", [ClientId, Count]),
+  {noreply, State};
+
+handle_info({tcp, Socket, <<?HDR_MOVE, Guid:128, X1:32/float, Y1:32/float, Z1:32/float, X2:32/float, Y2:32/float, Z2:32/float>>}, State) ->
+  #state{client_id = ClientId, socket = Socket, transport = Transport} = State,
+  Transport:setopts(Socket, [{active, once}]),
+  lager:debug("[~s] Received Move: GUID=~p, From = (~p, ~p, ~p) To = (~p, ~p, ~p)", [ClientId, Guid, X1, Y1, Z1, X2, Y2, Z2]),
   {noreply, State};
 
 handle_info({tcp_closed, _Socket}, #state{client_id = ClientId} = State) ->
@@ -95,7 +133,7 @@ handle_info(timeout, #state{client_id = ClientId} = State) ->
 
 handle_info({ping, Count}, State) ->
   #state{client_id = ClientId, socket = Socket, transport = Transport, socket_timeout = SocketTimeout, ping_interval = PingInterval} = State,
-  lager:debug("[~s] Sending ping(~p)", [ClientId, Count]),
+  % lager:debug("[~s] Sending ping(~p)", [ClientId, Count]),
   Transport:send(Socket, <<?HDR_PING, Count:32>>),
   NewPingTimer = erlang:send_after(PingInterval, self(), {ping, Count + 1}),
   {noreply, State#state{ping_timer = NewPingTimer}, SocketTimeout};
@@ -127,4 +165,3 @@ terminate(_Reason, State) ->
 -spec code_change(OldVsn :: {down, term()} | term(), State :: gen_server:state(), Extra :: term()) -> {ok, NewState :: state()} | {error, Reason :: term()}.
 code_change(_OldVsn, State, _Extra) ->
   {ok, State}.
-

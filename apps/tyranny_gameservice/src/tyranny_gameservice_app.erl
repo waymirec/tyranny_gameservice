@@ -10,6 +10,8 @@
 %% Application callbacks
 -export([start/2, stop/1]).
 
+-include("types.hrl").
+
 %%====================================================================
 %% API
 %%====================================================================
@@ -29,7 +31,7 @@ start(_StartType, _StartArgs) ->
       {ping_interval, config:key(<<"ping_interval">>)}
     ]),
 
-  tyranny_gameservice_sup:start_link().
+  tyranny_gameservice_sup:start_link(config:key(<<"zones">>)).
 
 %%--------------------------------------------------------------------
 stop(_State) ->
