@@ -31,7 +31,7 @@ start(_StartType, _StartArgs) ->
       {ping_interval, config:key(<<"ping_interval">>)}
     ]),
 
-  tyranny_gameservice_sup:start_link(config:key(<<"zones">>)).
+  tyranny_gameservice_sup:start_link().
 
 %%--------------------------------------------------------------------
 stop(_State) ->

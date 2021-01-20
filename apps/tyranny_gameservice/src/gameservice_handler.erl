@@ -2,13 +2,20 @@
 -behavior(ranch_protocol).
 -behavior(gen_server).
 
+%% API callbacks
+-export([
+  send_message/2
+]).
+
 %% Ranch Callbacks
--export([start_link/4,
+-export([
+  start_link/4,
   init/1
 ]).
 
 %% Gen_Server Callbacks
--export([handle_cast/2,
+-export([
+  handle_cast/2,
   handle_call/3,
   handle_info/2,
   terminate/2,
@@ -16,6 +23,9 @@
 ]).
 
 -include("opcodes.hrl").
+-include("vector3.hrl").
+
+-define(SERVER, ?MODULE).
 
 -record(state, {
   ref                   :: ranch:ref(),
@@ -24,6 +34,7 @@
   socket                :: gen_tcp:socket(),
   transport             :: module(),
   socket_timeout = 5000 :: integer(),
+  player_pid            :: pid(),
   ping_timer            :: any(),
   ping_interval = 1000  :: integer()
 }).
@@ -31,6 +42,13 @@
 -type state() :: #state{}.
 
 -define(config(Key, Opts), proplists:get_value(Key, Opts)).
+
+%% API callbacks
+
+send_message(Pid, Message) when is_binary(Message) ->
+  gen_server:cast(Pid, {send_message, Message}).
+
+%% Ranch callbacks
 
 -spec start_link(Ref :: ranch:ref(), Socket :: gen_tcp:socket(), Transport :: module(), any()) -> {ok, pid()}.
 start_link(Ref, Socket, Transport, Opts) ->
@@ -42,6 +60,7 @@ init([Ref, Socket, Transport, Opts]) ->
   {ok, {IpAddress, Port}} = inet:peername(Socket),
   ClientId = list_to_binary(io_lib:format("~s:~p", [inet:ntoa(IpAddress), Port])),
   ClientUuid = uuid:create(),
+
   lager:info("[~s] Connection accepted from client ~s:~p", [ClientId, inet:ntoa(IpAddress), Port]),
 
   %% Perform any required state initialization here
@@ -68,11 +87,14 @@ init([Ref, Socket, Transport, Opts]) ->
 
       {ok, <<?HDR_READY>>} = Transport:recv(Socket, 0, 5000),
 
-      X = 0.0,
-      Y = 8.0,
-      Z = 0.0,
-      lager:debug("[~s] Client is ready. Sending Enter World.", [ClientId]),
+      {ok, Player} = player:start_link(ClientId, ClientUuid, self()),
+      {ok, #vector3{x=X,y=Y,z=Z}} = player:location(Player),
+
       ok = gen_tcp:send(Socket, <<?HDR_ENTER_WORLD, X:32/float, Y:32/float, Z:32/float>>),
+      game_event:game_object_spawned(Player),
+
+      SpawnMessage = <<?HDR_SPAWN_GO, ClientUuid/binary, X:32/float, Y:32/float, Z:32/float>>,
+      zone_manager:broadcast({pid, Player}, SpawnMessage, 100.0),
 
       ok = Transport:setopts(Socket, [{active, once}]),
       PingInterval = ?config(ping_interval, Opts),
@@ -81,6 +103,7 @@ init([Ref, Socket, Transport, Opts]) ->
 
       State1 = State#state
       {
+        player_pid = Player,
         socket_timeout = SocketTimeout,
         ping_interval = PingInterval,
         ping_timer = PingTimer
@@ -93,6 +116,8 @@ init([Ref, Socket, Transport, Opts]) ->
       Transport:close(Socket),
       ok
   end.
+
+%% gen_server callbacks
 
 -spec handle_info(Request :: term(), State :: state()) -> {noreply, State :: state()}.
 handle_info({tcp, Socket, <<?HDR_NOOP, _Ignored:8>>}, State) ->
@@ -113,10 +138,11 @@ handle_info({tcp, Socket, <<?HDR_PONG, Count:32>>}, State) ->
   % lager:debug("[~s] Received pong(~p)!", [ClientId, Count]),
   {noreply, State};
 
-handle_info({tcp, Socket, <<?HDR_MOVE, Guid:128, X1:32/float, Y1:32/float, Z1:32/float, X2:32/float, Y2:32/float, Z2:32/float>>}, State) ->
-  #state{client_id = ClientId, socket = Socket, transport = Transport} = State,
+handle_info({tcp, Socket, <<?HDR_MOVE, Guid:128, X1:32/float, Y1:32/float, Z1:32/float, X2:32/float, Y2:32/float, Z2:32/float>> = Message}, State) ->
+  #state{client_id = ClientId, socket = Socket, transport = Transport, player_pid = Player} = State,
   Transport:setopts(Socket, [{active, once}]),
   lager:debug("[~s] Received Move: GUID=~p, From = (~p, ~p, ~p) To = (~p, ~p, ~p)", [ClientId, Guid, X1, Y1, Z1, X2, Y2, Z2]),
+  zone_manager:broadcast({pid, Player}, Message, 100.0),
   {noreply, State};
 
 handle_info({tcp_closed, _Socket}, #state{client_id = ClientId} = State) ->
@@ -150,15 +176,25 @@ handle_call(_Request, _From, #state{client_id = ClientId} = State) ->
   {reply, ok, State}.
 
 -spec handle_cast(Request :: term(), State :: state()) -> {noreply, State :: state()}.
+handle_cast({send_message, Message}, #state{socket = Socket} = State) ->
+  ok = gen_tcp:send(Socket, Message),
+  {noreply, State};
+
 handle_cast(_Msg, #state{client_id = ClientId} = State) ->
   lager:debug("[~s] Received unexpected cast", [ClientId]),
   {noreply, State}.
 
 -spec terminate(Reason :: normal | shutdown | {shutdown, term()} | term(), State :: state()) -> ok.
 terminate(_Reason, State) ->
-  #state{client_id = ClientId, transport = Transport, socket = Socket, ping_timer = PingTimer} = State,
+  #state{client_id = ClientId, client_uuid = ClientUuid, transport = Transport, socket = Socket, player_pid = Player, ping_timer = PingTimer} = State,
   lager:debug("[~s] Terminating handler", [ClientId]),
   timer:cancel(PingTimer),
+
+  game_event:game_object_destroyed(Player),
+  {ok, Location} = player:location(Player),
+  DestroyMessage = <<?HDR_DESTROY_GO, ClientUuid/binary>>,
+  zone_manager:broadcast({vector, Location}, DestroyMessage, 100.0),
+
   Transport:close(Socket),
   ok.
 

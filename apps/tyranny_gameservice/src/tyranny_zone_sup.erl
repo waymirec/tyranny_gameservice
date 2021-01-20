@@ -4,7 +4,7 @@
 
 %% API
 -export([
-  start_link/1,
+  start_link/0,
   start_child/1
 ]).
 
@@ -19,8 +19,8 @@
 %% API functions
 %%====================================================================
 
-start_link(Zones) ->
-  supervisor:start_link({local, ?SERVER}, ?MODULE, [Zones]).
+start_link() ->
+  supervisor:start_link({local, ?SERVER}, ?MODULE, []).
 
 start_child(ZoneId) ->
   supervisor:start_child(?SERVER, [ZoneId]).
@@ -30,8 +30,8 @@ start_child(ZoneId) ->
 %%====================================================================
 
 %% Child :: {Id,StartFunc,Restart,Shutdown,Type,Modules}
-init([Zones]) ->
-  ZoneSpec = {tyranny_zone, {tyranny_zone, start_link, [Zones]}, permanent, 2000, worker, [tyranny_zone]},
+init([]) ->
+  ZoneSpec = {tyranny_zone, {tyranny_zone, start_link, []}, permanent, 2000, worker, [tyranny_zone]},
   Children = [ZoneSpec],
   RestartStrategy = {simple_one_for_one, 10, 10},
   {ok, {RestartStrategy, Children}}.

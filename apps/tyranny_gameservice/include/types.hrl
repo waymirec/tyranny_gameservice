@@ -1,1 +1,0 @@
--type coord()   :: {float(), float(), float()}.
