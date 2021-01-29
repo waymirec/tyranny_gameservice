@@ -13,3 +13,4 @@ create(Str) when is_list(Str) ->
 
 to_list(Bin) when is_binary(Bin) ->
   hex:bin_to_hexstr(Bin).
+

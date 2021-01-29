@@ -31,8 +31,9 @@ init([]) ->
   EventManager = {game_event, {game_event, start_link, []}, permanent, 2000, worker, [game_event]},
   GameServicePublisher = {gameservice_publisher, {gameservice_publisher, start_link, []}, permanent, 2000, worker, [gameservice_publisher]},
   AuthTokenManager = {authtoken_manager, {authtoken_manager, start_link, []}, permanent, 2000, worker, [authtoken_manager]},
-  ZoneManager = {zone_manager, {zone_manager, start_link, []}, permanent, 2000, worker, [zone_manager]},
-  Children = [EventManager, GameServicePublisher, AuthTokenManager, ZoneManager],
+  Grid = {grid_manager, {grid_manager, start_link, []}, permanent, 2000, worker, [grid_manager]},
+  World = {world, {world, start_link, []}, permanent, 2000, worker, [world]},
+  Children = [EventManager, GameServicePublisher, AuthTokenManager, Grid, World],
   RestartStrategy = {one_for_one, 10, 10},
   {ok, {RestartStrategy, Children}}.
 

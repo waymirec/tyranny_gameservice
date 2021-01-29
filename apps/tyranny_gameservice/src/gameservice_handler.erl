@@ -22,6 +22,7 @@
   code_change/3
 ]).
 
+-include_lib("kernel/include/logger.hrl").
 -include("opcodes.hrl").
 -include("vector3.hrl").
 
@@ -30,7 +31,7 @@
 -record(state, {
   ref                   :: ranch:ref(),
   client_id             :: binary(),
-  client_uuid           :: binary(),
+  username              :: binary(),
   socket                :: gen_tcp:socket(),
   transport             :: module(),
   socket_timeout = 5000 :: integer(),
@@ -57,62 +58,17 @@ start_link(Ref, Socket, Transport, Opts) ->
 
 -spec init(Args :: list()) -> no_return().
 init([Ref, Socket, Transport, Opts]) ->
-  {ok, {IpAddress, Port}} = inet:peername(Socket),
-  ClientId = list_to_binary(io_lib:format("~s:~p", [inet:ntoa(IpAddress), Port])),
-  ClientUuid = uuid:create(),
+  State = accept_connection(Ref, Socket, Transport, Opts),
+  {Token, #state{}=State1} = wait_for_ident(State),
 
-  lager:info("[~s] Connection accepted from client ~s:~p", [ClientId, inet:ntoa(IpAddress), Port]),
-
-  %% Perform any required state initialization here
-  ok = ranch:accept_ack(Ref),
-  ok = Transport:setopts(Socket, [{active, false}, {packet, 4}]),
-
-  {ok, Data} = Transport:recv(Socket, 0, 5000),
-  <<?OP_IDENT:16, UserNameLength:16, UserName:UserNameLength/binary, TokenLength:16, Token:TokenLength/binary>> = Data,
-  State = #state
-  {
-    ref = Ref,
-    client_id = ClientId,
-    client_uuid = ClientUuid,
-    socket = Socket,
-    transport = Transport
-  },
-
-  lager:debug("[~s] Validating token [~s] for user ~s", [ClientId, Token, UserName]),
-  case authtoken_manager:validate(UserName, Token) of
+  case authtoken_manager:validate(State1#state.username, Token) of
     true ->
-      lager:debug("[~s] Token is valid", [ClientId]),
-
-      ok = Transport:send(Socket,<<?HDR_HELLO, ClientUuid/binary>>),
-
-      {ok, <<?HDR_READY>>} = Transport:recv(Socket, 0, 5000),
-
-      {ok, Player} = player:start_link(ClientId, ClientUuid, self()),
-      {ok, #vector3{x=X,y=Y,z=Z}} = player:location(Player),
-
-      ok = gen_tcp:send(Socket, <<?HDR_ENTER_WORLD, X:32/float, Y:32/float, Z:32/float>>),
-      game_event:game_object_spawned(Player),
-
-      SpawnMessage = <<?HDR_SPAWN_GO, ClientUuid/binary, X:32/float, Y:32/float, Z:32/float>>,
-      zone_manager:broadcast({pid, Player}, SpawnMessage, 100.0),
-
-      ok = Transport:setopts(Socket, [{active, once}]),
-      PingInterval = ?config(ping_interval, Opts),
-      PingTimer = erlang:send_after(PingInterval, self(), {ping, 1}),
-      SocketTimeout = ?config(socket_timeout, Opts),
-
-      State1 = State#state
-      {
-        player_pid = Player,
-        socket_timeout = SocketTimeout,
-        ping_interval = PingInterval,
-        ping_timer = PingTimer
-      },
-
-      gen_server:enter_loop(?MODULE, [], State1, SocketTimeout);
-
+      State2 = handshake(State1),
+      State3 = start_player_process(State2),
+      State4 = setup_ping(State3),
+      enter_loop(State4);
     false ->
-      lager:debug("[~s] Token is not valid: ~p", [ClientId, Token]),
+      ?LOG_INFO(#{what => "authentication", result=>"failure", details => Token}),
       Transport:close(Socket),
       ok
   end.
@@ -126,74 +82,74 @@ handle_info({tcp, Socket, <<?HDR_NOOP, _Ignored:8>>}, State) ->
   {noreply, State, SocketTimeout};
 
 handle_info({tcp, Socket, <<?HDR_PING, Count:32>>}, State) ->
-  #state{client_id = ClientId, transport = Transport, socket = Socket, socket_timeout = SocketTimeout} = State,
-  % lager:debug("[~s] Received ping(~p)!", [ClientId, Count]),
+  #state{transport = Transport, socket = Socket, socket_timeout = SocketTimeout} = State,
   ok = gen_tcp:send(Socket, <<?HDR_PONG, Count:32>>),
   ok = Transport:setopts(Socket, [{active, once}]),
   {noreply, State, SocketTimeout};
 
-handle_info({tcp, Socket, <<?HDR_PONG, Count:32>>}, State) ->
-  #state{client_id = ClientId, socket = Socket, transport = Transport} = State,
+handle_info({tcp, Socket, <<?HDR_PONG, _Count:32>>}, State) ->
+  #state{socket = Socket, transport = Transport} = State,
   Transport:setopts(Socket, [{active, once}]),
-  % lager:debug("[~s] Received pong(~p)!", [ClientId, Count]),
   {noreply, State};
 
-handle_info({tcp, Socket, <<?HDR_MOVE, Guid:128, X1:32/float, Y1:32/float, Z1:32/float, X2:32/float, Y2:32/float, Z2:32/float>> = Message}, State) ->
-  #state{client_id = ClientId, socket = Socket, transport = Transport, player_pid = Player} = State,
+handle_info({tcp, Socket, <<?HDR_MOVE_WORLD_ENTITY, X1:32/float, Y1:32/float, Z1:32/float, X2:32/float, Y2:32/float, Z2:32/float>>}, State) ->
+  #state{socket = Socket, transport = Transport, player_pid = Player, client_id = ClientId} = State,
   Transport:setopts(Socket, [{active, once}]),
-  lager:debug("[~s] Received Move: GUID=~p, From = (~p, ~p, ~p) To = (~p, ~p, ~p)", [ClientId, Guid, X1, Y1, Z1, X2, Y2, Z2]),
-  zone_manager:broadcast({pid, Player}, Message, 100.0),
+
+  ?LOG_DEBUG(#{what => "request:move", player_pid => Player, src => #{vector => #vector3{x=X1,y=Y1,z=Z1}}, dst => #{vector => #vector3{x=X2,y=Y2,z=Z2}}}),
+  Message = <<?HDR_MOVE_WORLD_ENTITY, ClientId/binary, X1:32/float, Y1:32/float, Z1:32/float, X2:32/float, Y2:32/float, Z2:32/float>>,
+  megaphone:broadcast(Message, Player, 100.0),
+
   {noreply, State};
 
-handle_info({tcp_closed, _Socket}, #state{client_id = ClientId} = State) ->
-  lager:debug("[~s] Socket closed", [ClientId]),
+handle_info({tcp_closed, _Socket}, State) ->
+  ?LOG_DEBUG(#{what => "network", result => "closed"}),
   {stop, normal, State};
 
-handle_info({tcp_error, _, Reason}, #state{client_id = ClientId} = State) ->
-  lager:debug("[~s] Error: ~s", [ClientId, Reason]),
+handle_info({tcp_error, _, Reason}, State) ->
+  ?LOG_DEBUG(#{what => "network", result => "error", details => Reason}),
   {stop, Reason, State};
 
-handle_info(timeout, #state{client_id = ClientId} = State) ->
-  lager:debug("[~s] Timeout!", [ClientId]),
+handle_info(timeout, State) ->
+  ?LOG_DEBUG(#{what => "network", result => "timeout"}),
   {stop, normal, State};
 
 handle_info({ping, Count}, State) ->
-  #state{client_id = ClientId, socket = Socket, transport = Transport, socket_timeout = SocketTimeout, ping_interval = PingInterval} = State,
-  % lager:debug("[~s] Sending ping(~p)", [ClientId, Count]),
+  #state{socket = Socket, transport = Transport, socket_timeout = SocketTimeout, ping_interval = PingInterval} = State,
   Transport:send(Socket, <<?HDR_PING, Count:32>>),
   NewPingTimer = erlang:send_after(PingInterval, self(), {ping, Count + 1}),
   {noreply, State#state{ping_timer = NewPingTimer}, SocketTimeout};
 
 handle_info(Info, State) ->
-  #state{client_id = ClientId, transport = Transport, socket = Socket} = State,
-  lager:debug("[~s] Received unexpected info: ~p", [ClientId, Info]),
+  #state{transport = Transport, socket = Socket} = State,
+  ?LOG_DEBUG(#{what => "process", result => "unexpected_info", details => Info}),
   Transport:setopts(Socket, [{active, once}]),
   {noreply, State}.
 
 -spec handle_call(Request :: term(), From :: {pid(), Tag :: any()}, State :: state()) -> Result :: {reply, Reply :: term(), NewState :: state()}.
-handle_call(_Request, _From, #state{client_id = ClientId} = State) ->
-  lager:debug("[~s] Received unexpected call", [ClientId]),
+handle_call(Request, _From, State) ->
+  ?LOG_DEBUG(#{what => "process", result => "unexpected_call", details => Request}),
   {reply, ok, State}.
 
 -spec handle_cast(Request :: term(), State :: state()) -> {noreply, State :: state()}.
-handle_cast({send_message, Message}, #state{socket = Socket} = State) ->
-  ok = gen_tcp:send(Socket, Message),
+handle_cast({send_message, Message}, #state{transport = Transport, socket = Socket} = State) ->
+  ok = Transport:send(Socket, Message),
   {noreply, State};
 
-handle_cast(_Msg, #state{client_id = ClientId} = State) ->
-  lager:debug("[~s] Received unexpected cast", [ClientId]),
+handle_cast(Msg, State) ->
+  ?LOG_DEBUG(#{what => "process", result => "unexpected_cast", details => Msg}),
   {noreply, State}.
 
 -spec terminate(Reason :: normal | shutdown | {shutdown, term()} | term(), State :: state()) -> ok.
 terminate(_Reason, State) ->
-  #state{client_id = ClientId, client_uuid = ClientUuid, transport = Transport, socket = Socket, player_pid = Player, ping_timer = PingTimer} = State,
-  lager:debug("[~s] Terminating handler", [ClientId]),
+  #state{transport = Transport, socket = Socket, player_pid = Player, ping_timer = PingTimer} = State,
+  ?LOG_DEBUG(#{what => "process", result => "terminate"}),
   timer:cancel(PingTimer),
 
   game_event:game_object_destroyed(Player),
-  {ok, Location} = player:location(Player),
-  DestroyMessage = <<?HDR_DESTROY_GO, ClientUuid/binary>>,
-  zone_manager:broadcast({vector, Location}, DestroyMessage, 100.0),
+  %{ok, Location} = game_object:location(Player),
+  %DestroyMessage = <<?HDR_DESTROY_GO, ClientId/binary>>,
+  %megaphone:broadcast(DestroyMessage, Location, 100.0),
 
   Transport:close(Socket),
   ok.
@@ -201,3 +157,68 @@ terminate(_Reason, State) ->
 -spec code_change(OldVsn :: {down, term()} | term(), State :: gen_server:state(), Extra :: term()) -> {ok, NewState :: state()} | {error, Reason :: term()}.
 code_change(_OldVsn, State, _Extra) ->
   {ok, State}.
+
+%% Internal functions
+accept_connection(Ref, Socket, Transport, Opts) ->
+  ClientId = uuid:create(),
+
+  logger:update_process_metadata(#{correlation_id => uuid:to_list(ClientId)}),
+
+  ok = ranch:accept_ack(Ref),
+  ok = Transport:setopts(Socket, [{active, false}, {packet, 4}]),
+
+  {ok, {IpAddress, Port}} = inet:peername(Socket),
+
+  ?LOG_INFO(#{what => "connect", result => "success", src => #{ip4 => inet:ntoa(IpAddress), port=> Port}}),
+
+  #state{
+    ref = Ref,
+    transport = Transport,
+    socket = Socket,
+    client_id = ClientId,
+    socket_timeout = ?config(socket_timeout, Opts),
+    ping_interval = ?config(ping_interval, Opts)
+  }.
+
+wait_for_ident(#state{transport = Transport, socket = Socket} = State) ->
+  {ok, Data} = Transport:recv(Socket, 0, 5000),
+  <<?OP_IDENT:16, UserNameLength:16, UserName:UserNameLength/binary, TokenLength:16, Token:TokenLength/binary>> = Data,
+  {Token, State#state{username = UserName}}.
+
+handshake(#state{client_id = ClientId, socket = Socket, transport = Transport} = State) ->
+  ok = Transport:send(Socket,<<?HDR_HELLO, ClientId/binary>>),
+  {ok, <<?HDR_READY>>} = Transport:recv(Socket, 0, 5000),
+  State.
+
+start_player_process(#state{client_id = ClientId, transport = Transport, socket = Socket} = State) ->
+  {ok, Pid} = player:start_link(ClientId, self()),
+
+  {ok, #vector3{x=X,y=Y,z=Z}=Vector} = player:location(Pid),
+  ok = Transport:send(Socket, <<?HDR_ENTER_WORLD, X:32/float, Y:32/float, Z:32/float>>),
+  game_event:game_object_spawned(Pid, Vector),
+
+  SpawnMessage = <<?HDR_SPAWN_WORLD_ENTITY, ClientId/binary, X:32/float, Y:32/float, Z:32/float>>,
+  megaphone:broadcast(SpawnMessage, Pid, 100.0),
+
+  NearbyObjects = megaphone:discover_objects(Pid, 100.0),
+  discover_objects(NearbyObjects, State),
+
+  State#state{player_pid = Pid}.
+
+setup_ping(#state{ping_interval = PingInterval} = State) ->
+  State#state{ping_timer = erlang:send_after(PingInterval, self(), {ping, 1})}.
+
+enter_loop(#state{transport = Transport, socket = Socket, socket_timeout = SocketTimeout} = State) ->
+  ok = Transport:setopts(Socket, [{active, once}]),
+  gen_server:enter_loop(?MODULE, [], State, SocketTimeout),
+  ok.
+
+discover_objects([Object | Objects], #state{transport = Transport, socket = Socket} = State) ->
+  {ok, Id} = player:id(Object),
+  {ok, #vector3{x=X,y=Y,z=Z}} = player:location(Object),
+  SpawnMessage = <<?HDR_SPAWN_WORLD_ENTITY, Id/binary, X:32/float, Y:32/float, Z:32/float>>,
+  Transport:send(Socket, SpawnMessage),
+  discover_objects(Objects, State);
+
+discover_objects([], _State) ->
+  ok.

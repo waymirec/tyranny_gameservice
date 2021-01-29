@@ -1,4 +1,4 @@
--module(tyranny_zone_sup).
+-module(grid_sup).
 
 -behaviour(supervisor).
 
@@ -31,7 +31,7 @@ start_child(ZoneId) ->
 
 %% Child :: {Id,StartFunc,Restart,Shutdown,Type,Modules}
 init([]) ->
-  ZoneSpec = {tyranny_zone, {tyranny_zone, start_link, []}, permanent, 2000, worker, [tyranny_zone]},
-  Children = [ZoneSpec],
+  GridSpec = {grid_cell, {grid_cell, start_link, []}, permanent, 2000, worker, [grid_cell]},
+  Children = [GridSpec],
   RestartStrategy = {simple_one_for_one, 10, 10},
   {ok, {RestartStrategy, Children}}.

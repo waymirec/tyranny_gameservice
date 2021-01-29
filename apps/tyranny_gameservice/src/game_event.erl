@@ -9,7 +9,7 @@
   delete_handler/2,
   delete_handler/1,
   send_event/2,
-  game_object_spawned/1,
+  game_object_spawned/2,
   game_object_destroyed/1
 ]).
 
@@ -25,6 +25,8 @@
 
 -define(SERVER, ?MODULE).
 
+-include("vector3.hrl").
+
 -record(state, {
   handlers = #{}               :: map()
 }).
@@ -34,10 +36,10 @@
 start_link() ->
   gen_server:start_link({local, ?SERVER}, ?SERVER, [], []).
 
-add_handler(Pid, Tags) when (is_atom(Pid) or is_pid(Pid)) and is_list(Tags) ->
+add_handler(Pid, Tags) when is_pid(Pid) and is_list(Tags) ->
   gen_server:call(?SERVER, {add_handler, Pid, Tags});
 
-add_handler(Pid, Tag) when (is_atom(Pid) or is_pid(Pid)) and is_atom(Tag) ->
+add_handler(Pid, Tag) when is_pid(Pid) and is_atom(Tag) ->
   gen_server:call(?SERVER, {add_handler, Pid, [Tag]}).
 
 delete_handler(Pid, Tags) when is_pid(Pid) and is_list(Tags) ->
@@ -49,8 +51,8 @@ delete_handler(Pid, Tag) when is_pid(Pid) and is_atom(Tag) ->
 delete_handler(Pid) when is_pid(Pid) ->
   gen_server:call(?SERVER, {delete_handler, Pid}).
 
-game_object_spawned(Pid) when is_pid(Pid) ->
-  gen_server:cast(?SERVER, {game_object_spawned, Pid}).
+game_object_spawned(Pid, Vector) when is_pid(Pid) and is_record(Vector, vector3)->
+  gen_server:cast(?SERVER, {game_object_spawned, {Pid, Vector}}).
 
 game_object_destroyed(Pid) when is_pid(Pid) ->
   gen_server:cast(?SERVER, {game_object_destroyed, Pid}).
